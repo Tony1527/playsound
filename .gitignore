@@ -57,3 +57,12 @@ docs/_build/
 
 # PyBuilder
 target/
+
+#samples
+music/
+test.py
+
+#vscod
+.vscode
+
+
