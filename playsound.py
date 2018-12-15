@@ -156,38 +156,96 @@ class music(object):
     __end=None
     __is_repeat=False
     __time=None
-    # __end_loop_event=None
-    # __loop_event=None
-    
+
+    '''
+        initialize the music object
+    '''
     def __init__(self,sound):
         self.__alias=['','']
         self.__running_idx=0
         self.__time=0
         self.preload(sound)
-        # self.__loop_event=Event()
-        # self.__end_loop_event=Event()
-        
-        # self.__loop_event.set()
-        # self.__end_loop_event.set()
 
-    def update_time(self,time):
-        mod = self.mode()
-        #if music is opening
-        if mod=='playing' or mod =='stopped':
-            self.__time=self.__time-time
-            #if time <0, then clear the music object
-            if self.__time<=0:
-                if self.__is_repeat==True:
-                    self.__running_idx=(self.__running_idx+1)%2
-                    self.__time=self.length()
-                    self.__play_implement(self.__start,self.__end)
-                    return 0
-                else:
-                    return 1
-            
-        print(self.__time,mod)
 
-    '''preload the music information'''
+    
+
+    
+    '''
+        seek the music to pos.
+        music will bee paused
+    '''
+    def seek(self,pos):
+        if self.__check_alias():
+            if pos>self.__end or pos<self.__start:
+                raise PlaysoundException('position exceed range')
+            self.pause()
+            self.__time=self.__end-pos
+            winCommand('seek',self.__get_alias(),'to',str(pos))
+
+    '''
+        clear the music object
+        music will be closed
+    '''
+    def close(self):
+        self.stop()
+        self.__clear()
+
+
+    '''
+        set  repeat flag of the music
+        music will repeatly play
+    '''
+    def set_repeat(self,repeat):
+        self.__is_repeat=repeat
+
+
+    '''
+        return the range from start to end
+        music will not be effected
+    '''
+    def length(self):
+        if self.__check_alias():
+            return self.__end-self.__start
+
+    '''
+        return the mode of the music object
+        music will not be effected
+    '''
+    def mode(self):
+        if self.__check_alias():
+            return winCommand('status',self.__get_alias(),'mode').decode()
+
+    '''
+        pause the music
+        music will be paused
+    '''
+    def pause(self):
+        if self.__check_alias():
+            winCommand('pause '+self.__get_alias())
+            self.__time=self.__end-self.position()
+                
+    '''
+        play the music from start to end
+        music will be playing
+    '''
+    def play(self,start=0,end=-1):
+        self.__start,self.__end=self.__parse_start_end(start,end,self.total_length())
+        self.__play_implement(start,end)
+    
+
+    '''
+        return the position of the music
+        music will not be effected
+    '''
+    def position(self):
+        if self.__check_alias():
+            return int(winCommand('status',self.__get_alias(),'position').decode())
+        else:
+            return 0
+
+    '''
+        preload the music information
+    '''
     def preload(self,sound):
         self.__sound=sound
         for i in range(2):
@@ -199,52 +257,14 @@ class music(object):
         length=self.total_length()
         self.__start=0
         self.__end=length
-        self.__time=length
+        self.__time=0
         return length
 
-    # def seek(self,pos):
-    #     if self.__check_alias():
-    #         if pos>self.__end or pos<self.__start:
-    #             raise PlaysoundException('position exceed range')
-            # self.__time=self.__end-pos
-    #         self.stop()
-    #         if self.__is_repeat:
-    #             self.__pos = pos
-    #             self.__is_repeat=False
-    #         else:
-    #             winCommand('seek',self.__alias,'to',str(self.position()))
-
-    def close(self):
-        self.stop()
-        self.__clear()
-
-    def set_repeat(self,repeat):
-        self.__is_repeat=repeat
-
-    def length(self):
-        if self.__check_alias():
-            return self.__end-self.__start
-
-    def mode(self):
-        if self.__check_alias():
-            return winCommand('status',self.__get_alias(),'mode').decode()
-
-    def pause(self):
-        if self.__check_alias():
-            winCommand('pause '+self.__get_alias())
-            self.__time=self.__end-self.position()
-                
-
-    def play(self,start=0,end=-1):
-        # self.stop()
-        self.__start,self.__end=self.__parse_start_end(start,end,self.total_length())
-        self.__play_implement(start,end)
     
-
-    def position(self):
-        if self.__check_alias():
-                return int(winCommand('status',self.__get_alias(),'position').decode())
-
+    '''
+        resume playing
+        music will be playing
+    '''
     def resume(self):
         if self.__check_alias():
             if self.__is_repeat:
@@ -252,18 +272,53 @@ class music(object):
             else:
                 winCommand('resume '+self.__alias)
 
+
+    '''
+        stop the music.
+        music will be stopped
+    '''
     def stop(self):
         if self.__check_alias():
+            self.seek(self.__start)
             winCommand('stop '+self.__get_alias())
-            self.__time=self.__end-self.__start
-            # self.__loop_event.set()
-            # self.__end_loop_event.wait()
+            self.__time=0
 
             
-    
+    '''
+        total_length of the music object, the difference that total_length is the range is total music,
+        but length is only range from start to end
+        music will not be effected
+    '''
     def total_length(self):
         if self.__check_alias():
             return int(winCommand('status',self.__get_alias(),'length').decode())
+    
+
+    '''
+        update the record time of the music, 
+    '''
+    #     if the music is playing, then the remaining time should be subtract from time.
+    #     However sometimes the music is stopped,but the record time is not as same as the real remaining time of the music.
+    #     Thus you should also consider the situation when music is stopped.
+    def update_time(self,time):
+        mod = self.mode()
+        if mod=='paused':
+            return 0
+        if mod=='playing' or mod =='stopped':
+            self.__time=self.__time-time
+            
+            if self.__time<=0:
+                #if time <0, then repeat the music or stop the music
+                if self.__is_repeat==True:
+                    self.__running_idx=(self.__running_idx+1)%2
+                    self.__time=self.length()
+                    self.__play_implement(self.__start,self.__end)
+                    return 0
+                else:
+                    self.__time=0
+                    return 1
+        print('pos  rt  mode')
+        print(self.position(),self.__time,mod)
     
         
     
@@ -307,12 +362,8 @@ class music(object):
             return self.__sound
 
     def __play_implement(self,start,end):
-        
         self.__time=end - start
         winCommand('play',self.__get_alias(),'from '+ str(start) +' to',str(end))
-
-    
-    # sss
     
 
     def print(self):
