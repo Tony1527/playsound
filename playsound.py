@@ -145,8 +145,11 @@ def winCommand(*command):
 
 from threading import Thread,Event,Lock
 from queue import Queue,Empty
+from collections import deque
 
-
+'''
+    music class which uses windows mci to play the music
+'''
 class _music(object):
     
     __alias=None
@@ -155,19 +158,19 @@ class _music(object):
     __start=None
     __end=None
     __is_repeat=False
-    __time=None
     __id=-1
+    music_list=None
     '''
         initialize the music object
     '''
     def __init__(self,sound,id):
         self.__alias=['','']
         self.__running_idx=0
-        self.__time=0
         self.__id=id
         self.preload(sound)
         
-
+    def set_music_list(self,music_list):
+        self.music_list = music_list
     
     def __eq__(self,value):
         return self.__id==value
@@ -187,6 +190,13 @@ class _music(object):
     '''
     def get_id(self):
         return self.__id
+
+    '''
+        return whether music plays repeatly
+        music will not be affected
+    '''
+    def is_repeat(self):
+        return self.__is_repeat
 
 
     '''
@@ -212,7 +222,6 @@ class _music(object):
     def pause(self):
         if self.__check_alias():
             winCommand('pause '+self.__get_alias())
-            self.__time=self.__end-self.position()
                 
     '''
         play the music from start to end
@@ -231,8 +240,6 @@ class _music(object):
     def position(self):
         if self.__check_alias():
             return int(winCommand('status',self.__get_alias(),'position').decode())
-        else:
-            return 0
 
     '''
         preload the music information
@@ -248,7 +255,6 @@ class _music(object):
         length=self.total_length()
         self.__start=0
         self.__end=length
-        self.__time=0
         return length
 
     
@@ -272,7 +278,6 @@ class _music(object):
             if pos>self.__end or pos<self.__start:
                 raise PlaysoundException('position exceed range')
             
-            self.__time=self.__end-pos
             winCommand('seek',self.__get_alias(),'to',str(pos))
             winCommand('play',self.__get_alias(),'from '+ str(pos) +' to',str(self.__end))
             self.pause()
@@ -301,7 +306,6 @@ class _music(object):
         if self.__check_alias():
             self.seek(self.__start)
             winCommand('stop '+self.__get_alias())
-            self.__time=0
 
             
     '''
@@ -317,40 +321,17 @@ class _music(object):
     '''
         update the record time of the music, 
     '''
-    #     if the music is playing, then the remaining time should be subtract from time.
-    #     However sometimes the music is stopped,but the record time is not as same as the real remaining time of the music.
-    #     Thus you should also consider the situation when music is stopped.
-    def update_time(self,time):
+    def update_mode(self,delay=0):
         mod = self.mode()
-        # print('pos  rt  mode')
-        # print(self.position(),self.__time,mod)
-        if mod=='paused':
-            return 0
 
         if mod =='playing':
-                #if time <0, then repeat the music or stop the music
+                #if self.__end-self.position()<delay then repeat the music
                 if self.__is_repeat==True:
-                    if self.__end-self.position()<=50:
+                    if self.__end-self.position()<=delay:
                         self.__running_idx=(self.__running_idx+1)%2
-                        self.__time=self.length()
                         self.__play_implement(self.__start,self.__end)
-                        return 0
-                else:
-                    self.__time=0
-                    return 1
-        # if mod=='playing' or mod =='stopped':
-        #     self.__time=self.__time-time
-            
-        #     if self.__time<=0:
-        #         #if time <0, then repeat the music or stop the music
-        #         if self.__is_repeat==True:
-        #             self.__running_idx=(self.__running_idx+1)%2
-        #             self.__time=self.length()
-        #             self.__play_implement(self.__start,self.__end)
-        #             return 0
-        #         else:
-        #             self.__time=0
-        #             return 1
+        return mod
+       
         
     
         
@@ -360,7 +341,8 @@ class _music(object):
     
     
     def __check_alias(self):
-        return self.__get_alias()!=''
+        if self.__get_alias()!='':
+            return True
 
     def __parse_start_end(self,start,end,length):
         if not (isinstance(start,int) and isinstance(end,int)):
@@ -392,10 +374,8 @@ class _music(object):
             self.__start=None
             self.__end=None
             self.__is_repeat=False
-            return self.__sound
 
     def __play_implement(self,start,end):
-        self.__time=end - start
         winCommand('play',self.__get_alias(),'from '+ str(start) +' to',str(end))
     
 
@@ -410,7 +390,10 @@ class _music(object):
             print('position:',str(self.position()))
             print('start - end: {} - {}'.format(format_miliseconds(self.__start),format_miliseconds(self.__end)))
 
-class Singleton(object):
+'''
+    singleton
+'''
+class _singleton(object):
     _mutex=Lock()
     def __init__(self):
         pass
@@ -418,20 +401,25 @@ class Singleton(object):
     
     @classmethod
     def GetInstance(cls,*args,**kwargs):
-        if not hasattr(cls,'__instance'):
+        if not hasattr(cls,'_instance'):
             cls._mutex.acquire()  
-            if not hasattr(cls,'__instance'):
-                cls.__instance = cls()
+            if not hasattr(cls,'_instance'):
+                cls._instance = cls()
+                print('create instance',cls._instance)
             cls._mutex.release()
-        return cls.__instance
+        return cls._instance
 
+'''
+    music tag is used to send message for music manager
+'''
 class _music_tag(object):
-    id=-1
-    operator=''
-    args=None
-    block_event=None
+    id=-1               #id is the connection between music player and _music object
+    operator=''         #operator of _music object
+    args=None           #parameters
+    block_event=None    
     block=False
-    retval=None
+    retval=None         #return value for some methods of music player
+    music_list=None     #special deal with music list
     def __init__(self,id,operator,block=False,*args):
         self.id=id
         self.operator = operator
@@ -440,70 +428,202 @@ class _music_tag(object):
             self.block_event=Event()
             self.block=True
 
-class music_player(object):
-    __id=-1
-    __sound=None
-    static_id=0
-    mutex=Lock()
+    def set_music_list(self,music_list):
+        self.music_list = music_list
 
-    def __init__(self):
+'''
+    music player is the client who sends music tags to music manager which indeed plays music.
+    music player controls music once you open the music.
+'''
+class music_player(object):
+    __id=-1         #identity of every _music object
+    __music=None    #sound
+    static_id=0     #static variables
+    mutex=Lock()    #lock of static_id
+    music_list=None #this music player belong to which music list 
+
+    
+    def __init__(self,music_list=None):
+        '''
+            if music player belongs to one of music list,then set music_list,
+            otherwise you can ignore music_list parameter
+        '''
+        self.music_list = music_list
+
+    
+    def get_music(self):
+        '''
+            get name of sound
+        '''
+        return self.__music
+
+
+    def close(self):
+        '''
+            close sound
+        '''
+        self.__send('close',False)
+        self.__id=-1
+
+    
+    def length(self):
+        '''
+            get the length of music.
+
+            @warning: this method blocks current thread until music manager respond this functions
+        '''
+        return self.__send('length',True)
+
+    
+    def mode(self):
+        '''
+            get the mode of music.
+
+            @warning: this method blocks current thread until music manager respond this functions
+        '''
+        return self.__send('mode',True)
+
+    
+    def open(self,music):
+        '''
+            open the music
+        '''
+        self.__music=music
+
         self.mutex.acquire()
         self.__id=music_player.static_id
         music_player.static_id=music_player.static_id+1
         self.mutex.release()
 
-    def close(self):
-        self.__send('close',False)
+        self.__send('open',False,self.__music,self.__id)
 
-    def get_id(self):
-        return self.__id
-
-    def length(self):
-        return self.__send('length',True)
-
-    def mode(self):
-        return self.__send('mode',True)
-
-    def open(self,sound):
-        self.__sound=sound
-        self.__send('open',False,self.__sound,self.get_id())
-
-
+    
     def pause(self):
+        '''
+            pause the music
+        '''
         self.__send('pause',False)
 
+    
     def play(self,start=0,end=-1):
+        '''
+            play the music
+        '''
         self.__send('play',False,start,end)
 
+
+    
     def position(self):
+        '''
+            get the mode of music.
+
+            @warning: this method blocks current thread until music manager respond this functions
+        '''
         return self.__send('position',True)
 
     def resume(self):
+        '''
+            resume the music
+        '''
         self.__send('resume',False)
 
+    
     def seek(self,pos):
+        '''
+            seek the music to pos, which is defined in miliseconds
+        '''
         self.__send('seek',False,pos)
 
+    
     def set_repeat(self,repeat):
+        '''
+            play music repeatly
+        '''
         self.__send('set_repeat',False,repeat)
 
+    
     def stop(self):
+        '''
+            stop the music
+        '''
         self.__send('stop',False)
 
+
+    
     def total_length(self):
+        '''
+            get the total length of music.
+            
+            @warning: this method blocks current thread until music manager respond this functions
+        '''
         return self.__send('total_length',True)
 
+    
     def __send(self,operator,block,*args):
+        '''
+            send music tag to music manager
+        '''
+        if self.__id==-1:
+            raise PlaysoundException('No music has been opened')
         tag=_music_tag(self.__id,operator,block,*args)
+        tag.music_list=self.music_list
         return music_manager.GetInstance().put_tag(tag)
 
 
-class music_manager(Singleton):
+class music_list(object):
+    __music_list=deque()
+    def append_music(self,sound,repeat=False):
+        music = music_player(self)
+        
+        music.open(sound)
+        music.set_repeat(repeat)
+        self.__music_list.append(music)
+        if len(self.__music_list)==1:
+            self.top().play()
+
+    def play_next(self):
+        if len(self.__music_list)>=2:
+            self.__music_list[1].play()
+            self.__music_list.popleft().close()
+            
+
+    
+    def pause_music(self):
+        if len(self.__music_list)>0 and self.mode()=='playing':
+            self.top().pause()
+        
+    def resume_music(self):
+        if len(self.__music_list)>0 and self.mode()=='paused':
+            self.top().resume()
+
+    def mode(self):
+        return self.top().mode()
+    
+    def top(self):
+        return self.__music_list[0]
+
+
+class music_manager(_singleton):
     __mutex=Lock()
-    __music_list=[]
+    __sounds=[]
+    # __music_list=[]
     __tag_queue=Queue()
     __running_event=Event()
+    __end_running_event=Event()
+
+    def __init__(self):
+        self.reset_event()
+
+    def reset_event(self):
+        self.__running_event.set()
+        self.__end_running_event.clear()
+
     def put_tag(self,tag):
+        '''
+            push a music tag to music_manager
+
+            @warning: if tag.block is True ,this method will block current thread until music manager respond this functions
+        '''
         if tag.block:
             tag.block_event.clear()
         self.__tag_queue.put(tag)
@@ -514,58 +634,76 @@ class music_manager(Singleton):
 
     def get_tag(self):
         try:
-            tag=self.__tag_queue.get_nowait()
+            #if there is no task for music player, then sleep the music manager,
+            #otherwise get a tag immediately
+            if len(self.__sounds)>0:
+                tag=self.__tag_queue.get_nowait()
+            else:
+                tag=self.__tag_queue.get()
             retval=None
             if tag.operator == 'open':
-                self.__add_music(*tag.args)
+                m=self.__add_music(*tag.args)
+                m.set_music_list(tag.music_list)
             elif tag.operator == 'close':
-                self.__label_rm_music(tag.id)
+                #remove the music from self.__sounds
+                self.__rm_music(tag.id)
             else:
-                item=self.__get_music_item(tag.id)
+                (idx,item)=self.__get_music_idx_and_item(tag.id)
+                #reflect
                 retval=getattr(item,tag.operator)(*tag.args)
-            tag.retval=retval
+            
+            #set return values in tag
             if tag.block==True:
+                tag.retval=retval
                 tag.block_event.set()
         except Empty:
-            # print('in Empty')
             pass
     
     def __add_music(self,sound,id): 
         m=_music(sound,id)
         self.__mutex.acquire()
-        self.__music_list.append(m)
+        self.__sounds.append(m)
         self.__mutex.release()
 
-        return m.get_id()
+        return m
 
-    def __label_rm_music(self,id):
-        rm_item=self.__get_music_item(id)
+    def __rm_music(self,id):
+        idx,rm_item=self.__get_music_idx_and_item(id)
         rm_item.close()
         rm_item.set_id(-1)
-
-    def __rm_music(self):
         self.__mutex.acquire()
-        for i in range(len(self.__music_list)-1,-1,-1):
-            if(self.__music_list[i]==-1):
-                self.__music_list.pop(i)
+        self.__sounds.pop(idx)
         self.__mutex.release()
 
-    def __get_music_item(self,id):
-        for x in self.__music_list:
+    def __get_music_idx_and_item(self,id):
+        for i,x in enumerate(self.__sounds):
             if x.get_id()==id:
-                return x
+                return i,x
         raise PlaysoundException('Unknown music object found')
 
+    
+
+            
+
     @classmethod
-    def start_music_manager(cls):
+    def start(cls):
+        '''
+            start the music manager
+        '''
         Thread(target=music_manager._start_music_manager_impl).start()
 
     
 
     @classmethod
-    def stop_music_manager(cls):
+    def stop(cls):
+        '''
+            stop the music manager
+        '''
         manager = cls.GetInstance()
         manager.__running_event.clear()
+        manager.__end_running_event.wait()
+        manager.reset_event()
+        print('stop manager',manager)
 
 
     '''
@@ -574,282 +712,28 @@ class music_manager(Singleton):
     @classmethod
     def _start_music_manager_impl(cls):
         manager = cls.GetInstance()
-        delay=1
-        manager.__running_event.set()
+        print('start manager',manager)
+        delay=100
+        
+        
         while(manager.__running_event.isSet()):
-            for m in manager.__music_list:
-                m.update_time(delay)
+            for m in manager.__sounds:
+                mode = m.update_mode(delay)
+
+                #callback the music_list
+                if m.music_list!=None and mode=='playing' and not m.is_repeat():
+                    pos = m.position()
+                    total_length=m.total_length()
+                    if  total_length-pos<=delay:
+                        m.music_list.play_next()            
 
             manager.get_tag()
-            manager.__rm_music()
-            # sleep(delay/1000)
-        for x in cls.__music_list:
+            
+            
+        for x in manager.__sounds:
             x.close()
-
-
-
-
-# m=music('music/HeroesPart2.mp3')
-# m.play(start=1000,end=4000)
-# cnt=0
-# delay=50
-# while True:
-#     m.update_time(delay)
-    
-#     cnt =cnt+delay
-#     if cnt ==6000:
-#         m.stop()
-#         m.set_repeat(True)
-#         print('set repeat')
-#     if cnt ==9000:
-#         m.seek(1000)
-#         m.resume()
-#     if cnt ==12000:
-#         m.pause()
-#         m.pause()
-#         m.pause()
-#         m.resume()
-#         m.stop()
-#         m.print()
-#         m.close()
-#         break
-#     sleep(delay/1000)
-
-
-# class music_player(object):
-    
-#     __alias=None
-#     __running_idx=None
-#     __sound=None
-    
-#     __end=None
-#     __end_loop_event=None
-#     __loop_event=None
-#     __is_repeat=False
-#     __is_block=False
-#     __pos=None
-#     __mod=None
-#     def __init__(self,sound=None):
-#         self.__alias=['','']
-#         self.__running_idx=0
-#         self.__loop_event=Event()
-#         self.__end_loop_event=Event()
-#         self.preload(sound)
-#         self.__loop_event.set()
-#         self.__end_loop_event.set()
-
-    
-
-#     '''preload the music information'''
-#     def preload(self,sound):
-#         if sound=='' or sound==None:
-#             self.__start=0
-#             self.__end = self.total_length()
-#             return 0
-#         self.__sound=sound
-#         for i in range(2):
-#             self.__alias[i]='playsound_'+str(random())
-#             winCommand('open "'+self.__sound+'" alias',self.__alias[i])
-#             winCommand('set',self.__alias[i],'time format milliseconds')
         
-        
-#         length=self.total_length()
-#         self.__start=0
-#         self.__end=length
-#         return length
-
-#     # def seek(self,pos):
-#     #     if self.__check_alias():
-#     #         if pos>self.__end or pos<self.__start:
-#     #             raise PlaysoundException('position exceed range')
-#     #         self.stop()
-#     #         if self.__is_repeat:
-#     #             self.__pos = pos
-#     #             self.__is_repeat=False
-#     #         else:
-#     #             winCommand('seek',self.__alias,'to',str(self.position()))
-
-#     def free(self):
-#         self.stop()
-#         self.__clear()
-
-#     def length(self):
-#         if self.__check_alias():
-#             return self.__end-self.__start
-
-#     def mode(self):
-#         if self.__check_alias():
-#             return winCommand('status',self.__get_alias(),'mode').decode()
-
-#     def pause(self):
-#         if self.__check_alias():
-#             if self.__is_repeat:
-#                 self.stop()
-#             else:
-#                 winCommand('pause '+self.__alias)
-
-#     def play(self,sound=None,block=False,repeat=False,start=0,end=-1):
-#         self.stop()
-
-#         if sound==None:         #play last sound
-#             sound = self.__sound
-#         elif self.__sound!=sound: #play new  sound
-#             self.__clear()
-#         else:                   #play same sound
-#             pass                
+        manager.__end_running_event.set()
 
 
-#         self.preload(sound)
-#         self.__play_implement(start,end,repeat,block,self.position())
-
-
-#     def play_from(self,start,end=-1,block=False,repeat=False):
-#         if self.__check_alias():
-#             # self.stop()
-#             #TODO :some thing wrong
-#             # self.position()
-#             self.__play_implement(start,end,repeat,block,0)
-    
-
-#     def position(self):
-#         if self.__check_alias():
-#                 return int(winCommand('status',self.__get_alias(),'position').decode())
-
-#     def resume(self):
-#         if self.__check_alias():
-#             if self.__is_repeat:
-#                 self.__play_implement(self.__start,self.__end,self.__is_repeat,self.__is_block,self.position())
-#             else:
-#                 winCommand('resume '+self.__alias)
-
-#     def stop(self):
-#         if self.__check_alias():
-#             self.__loop_event.set()
-#             self.__end_loop_event.wait()
-
-#             winCommand('stop '+self.__get_alias())
-            
-#             # sleep(1)
-#             # self.__mod='stopped'
-    
-#     def total_length(self):
-#         if self.__check_alias():
-#             print(self.__get_alias())
-#             return int(winCommand('status',self.__get_alias(),'length').decode())
-    
-        
-    
-#     def __get_alias(self):
-#         return self.__alias[self.__running_idx]
-    
-    
-#     def __check_alias(self):
-#         return self.__get_alias()!=''
-
-#     def __parse_start_end(self,start,end,length):
-#         if not (isinstance(start,int) and isinstance(end,int)):
-#             raise PlaysoundException('start and end must be int')
-#         _start=0
-#         _end=0
-#         if end==-1:
-#             _end = length
-#         elif end<=length:
-#             _end = end
-#         else:
-#             raise PlaysoundException('music range exceed limits')
-#         if start<0 or start>length:
-#             raise PlaysoundException('music range exceed limits')
-#         elif _end<start:
-#             raise PlaysoundException('end must be bigger than start')
-#         else:
-#             _start=start
-#         return _start,_end
-
-#     def __del__(self):
-#         self.__clear()
-    
-#     def __clear(self):
-#         if self.__check_alias():
-#             for i in range(2):
-#                 winCommand('close '+self.__alias[i])
-#             self.__alias=['','']
-#             self.__end=None
-#             self.__loop_event.set()
-#             self.__end_loop_event.set()
-#             self.__is_repeat=False
-#             self.__is_block=False
-#             # print('remain sound:',self.__sound)
-#             return self.__sound
-#         else:
-#             return self.__sound
-
-#     def __play_implement(self,start,end,repeat,block,pos):
-#         self.__start,self.__end=self.__parse_start_end(start,end,self.total_length())
-#         self.__is_repeat=repeat
-#         self.__is_block=block
-#         if repeat:
-#             #clear repeat event
-#             self.__loop_event.clear()
-#             self.__end_loop_event.clear()
-#             print(self.total_length())
-#             t=Thread(target=self.__loop_music,args=(self,self.__sound,self.__start,self.__end,int(pos)))
-#             t.start()
-#             t.join()
-            
-#         else:
-#             winCommand('play',self.__get_alias(),'from '+ str(self.__start) +' to',str(self.__end))
-#             if block:
-#                 sleep(self.length()/1000)
-
-    
-#     '''
-#         gapless music loop
-#     '''
-#     @staticmethod
-#     def __loop_music(master,sound,start,end,pos):
-#         master.__end_loop_event.set()
-#         master.free()
-#         master.preload(sound)
-#         def loop_and_check(master,start,stop,step):
-#             for x in range(start,stop,step):
-#                 if master.__loop_event.isSet():
-#                     master.__end_loop_event.set()
-#                     # master.stop()
-#                     return 1
-#                 sleep(step/1000)
-#             return 0
-#         if not isinstance(master,music_player) or master.__loop_event==None:
-#             raise PlaysoundException('master must be a music player')
-#         cnt=0
-#         delay=100
-#         stop = max(end-delay,delay)
-        
-#         step = min(delay,end-start)
-#         if pos>=end :
-#             raise PlaysoundException('pos must be smaller than end')
-
-#         #loop from pause position
-#         master.play_from(start=pos,end=end)
-#         if loop_and_check(master,pos,stop,step):
-#             return
-#         cnt=(cnt+1)%2
-        
-#         #loop music
-#         while True:
-#             winCommand('play',master.__alias[master.__running_idx],'from '+ start +' to',end)
-#             # lm[cnt].play_from(start=start,end=end)
-#             if loop_and_check(master,start,stop,step):
-#                 return
-#             master.__running_idx=(master.__running_idx+1)%2
-    
-
-#     def print(self):
-#         if self.__check_alias():
-#             def format_miliseconds(t):
-#                 return '%d:%d:%d.%d'%(t//3600000,(t%3600000)//60000,(t%60000)//1000,t%1000)
-
-#             print('music name:',self.__sound)
-#             print('mode：',self.mode())
-#             print('total_length：',self.total_length())
-#             print('position:',str(self.position()))
-#             print('start - end: {} - {}'.format(format_miliseconds(self.__start),format_miliseconds(self.__end)))
+music_manager.start()
